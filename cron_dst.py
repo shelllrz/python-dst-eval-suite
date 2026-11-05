@@ -1,28 +1,27 @@
-"""Agendador cron simplificado, determinístico e consciente de DST.
+"""Simplified, deterministic, and DST-aware cron scheduler.
 
-Sintaxe cron suportada: cinco campos (minuto hora dia-do-mês mês dia-da-semana),
-com números, '*', listas, intervalos e passos: por exemplo,
-'*/15 8-17/2 1,15 * 1-5'. Nomes de meses/dias e descritores como @daily não são
-suportados. Dia da semana segue cron: 0 ou 7 = domingo, 1 = segunda, ..., 6 =
-sábado. Quando dia-do-mês e dia-da-semana são ambos restritos, usa-se a regra
-cron tradicional OR; se um deles é exatamente '*', só o outro restringe.
+Supported cron syntax: five fields (minute hour day-of-month month day-of-week),
+supporting numbers, '*', lists, ranges, and steps: for example,
+'*/15 8-17/2 1,15 * 1-5'. Month/day names and descriptors like @daily are not
+supported. Day of week follows cron convention: 0 or 7 = Sunday, 1 = Monday, ..., 6 =
+Saturday. When both day-of-month and day-of-week are restricted, the traditional
+cron OR rule applies; if either of them is exactly '*', only the other restricts.
 
-Política DST explícita:
-- Um horário cron inexistente no gap da primavera é deslocado para frente pelo
-tamanho do gap, preservando os minutos (por exemplo, 02:30 -> 03:30 num salto
-  de uma hora).
-- Um horário cron ambíguo no fold do outono corresponde a duas ocorrências
-  reais. A função devolve a primeira ocorrência que ainda seja estritamente
-  posterior ao instante atual; uma chamada entre as ocorrências pode, portanto,
-  devolver a segunda.
-- `now` aware identifica um instante real e é convertido à zona solicitada.
-  `now` naive é interpretado como horário local e precisa ser único e válido;
-  horários atuais ambíguos ou inexistentes são rejeitados. Para selecionar um
-  dos folds de `now`, forneça um datetime aware com `fold` definido.
+Explicit DST policy:
+- A non-existent cron time during a spring gap is shifted forward by the gap
+  size, preserving minutes (e.g., 02:30 -> 03:30 during a one-hour jump).
+- An ambiguous cron time during an autumn fold corresponds to two actual
+  occurrences. The function returns the first occurrence that is still strictly
+  greater than the current instant; a call between occurrences may therefore
+  return the second.
+- Aware `now` identifies a real instant and is converted to the requested zone.
+  Naive `now` is interpreted as local time and must be unique and valid;
+  ambiguous or non-existent current times are rejected. To select one of the folds
+  of `now`, provide an aware datetime with `fold` set.
 
-A busca percorre datas civis e resolve cada horário por round-trip em UTC; não
-soma horas no relógio de parede. Dependências: somente biblioteca padrão Python
-3.11+ (datetime, dataclasses, zoneinfo, unittest).
+The search iterates over civil dates and resolves each time via a round-trip in UTC;
+it does not add hours to the wall clock. Dependencies: Python 3.11+ standard library
+only (datetime, dataclasses, zoneinfo, unittest).
 """
 
 from __future__ import annotations
@@ -32,11 +31,11 @@ from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 _UTC = timezone.utc
-_GREGORIAN_CYCLE_DAYS = 146_097  # 400 anos gregorianos
+_GREGORIAN_CYCLE_DAYS = 146_097  # 400 Gregorian years
 
 
 class CronExpressionError(ValueError):
-    """Expressão cron malformada ou fora dos limites suportados."""
+    """Malformed cron expression or value out of supported bounds."""
 
 
 def _parse_field(
@@ -47,21 +46,21 @@ def _parse_field(
     *,
     sunday_alias: bool = False,
 ) -> frozenset[int]:
-    """Parse um campo cron com listas, intervalos e passos."""
+    """Parse a cron field supporting lists, ranges, and steps."""
     if not text:
-        raise CronExpressionError(f"campo {field_name!r} vazio")
+        raise CronExpressionError(f"field {field_name!r} is empty")
 
     values: set[int] = set()
     for item in text.split(","):
         if not item:
-            raise CronExpressionError(f"item vazio no campo {field_name!r}")
+            raise CronExpressionError(f"empty item in field {field_name!r}")
 
         if item.count("/") > 1:
-            raise CronExpressionError(f"passo inválido em {field_name!r}: {item!r}")
+            raise CronExpressionError(f"invalid step in field {field_name!r}: {item!r}")
         if "/" in item:
             base, step_text = item.split("/", 1)
             if not step_text.isdigit() or int(step_text) < 1:
-                raise CronExpressionError(f"passo inválido em {field_name!r}: {item!r}")
+                raise CronExpressionError(f"invalid step in field {field_name!r}: {item!r}")
             step = int(step_text)
         else:
             base, step = item, 1
@@ -71,20 +70,20 @@ def _parse_field(
         elif base.count("-") == 1:
             start_text, end_text = base.split("-", 1)
             if not start_text.isdigit() or not end_text.isdigit():
-                raise CronExpressionError(f"intervalo inválido em {field_name!r}: {item!r}")
+                raise CronExpressionError(f"invalid range in field {field_name!r}: {item!r}")
             start, end = int(start_text), int(end_text)
             if start > end:
-                raise CronExpressionError(f"intervalo invertido em {field_name!r}: {item!r}")
+                raise CronExpressionError(f"inverted range in field {field_name!r}: {item!r}")
         else:
             if not base.isdigit():
-                raise CronExpressionError(f"valor inválido em {field_name!r}: {item!r}")
+                raise CronExpressionError(f"invalid value in field {field_name!r}: {item!r}")
             start = int(base)
-            # Em cron, `5/10` significa 5 e depois a cada 10 até o limite.
+            # In cron, `5/10` means 5 and then every 10 up to the limit.
             end = maximum if "/" in item else start
 
         if start < minimum or end > maximum:
             raise CronExpressionError(
-                f"valor fora do intervalo {minimum}-{maximum} no campo {field_name!r}: {item!r}"
+                f"value out of range {minimum}-{maximum} in field {field_name!r}: {item!r}"
             )
 
         for raw_value in range(start, end + 1, step):
@@ -92,7 +91,7 @@ def _parse_field(
             values.add(value)
 
     if not values:
-        raise CronExpressionError(f"campo {field_name!r} não seleciona valores")
+        raise CronExpressionError(f"field {field_name!r} selects no values")
     return frozenset(values)
 
 
@@ -108,35 +107,35 @@ class CronExpression:
 
     @classmethod
     def parse(cls, expression: str) -> "CronExpression":
-        """Parse uma expressão cron de cinco campos."""
+        """Parse a five-field cron expression."""
         if not isinstance(expression, str):
-            raise CronExpressionError("a expressão cron deve ser uma string")
+            raise CronExpressionError("cron expression must be a string")
         fields = expression.split()
         if len(fields) != 5:
             raise CronExpressionError(
-                "a expressão deve ter cinco campos: minuto hora dia-do-mês mês dia-da-semana"
+                "expression must have five fields: minute hour day-of-month month day-of-week"
             )
 
         minute_text, hour_text, dom_text, month_text, dow_text = fields
         return cls(
-            minutes=_parse_field(minute_text, 0, 59, "minuto"),
-            hours=_parse_field(hour_text, 0, 23, "hora"),
-            days_of_month=_parse_field(dom_text, 1, 31, "dia-do-mês"),
-            months=_parse_field(month_text, 1, 12, "mês"),
+            minutes=_parse_field(minute_text, 0, 59, "minute"),
+            hours=_parse_field(hour_text, 0, 23, "hour"),
+            days_of_month=_parse_field(dom_text, 1, 31, "day-of-month"),
+            months=_parse_field(month_text, 1, 12, "month"),
             days_of_week=_parse_field(
-                dow_text, 0, 7, "dia-da-semana", sunday_alias=True
+                dow_text, 0, 7, "day-of-week", sunday_alias=True
             ),
             dom_is_star=(dom_text == "*"),
             dow_is_star=(dow_text == "*"),
         )
 
     def matches_date(self, day: date) -> bool:
-        """Indique se a data satisfaz mês e regras de dia cron."""
+        """Indicate whether the date satisfies month and cron day rules."""
         if day.month not in self.months:
             return False
 
         dom_matches = day.day in self.days_of_month
-        # datetime.weekday(): segunda=0; cron: domingo=0.
+        # datetime.weekday(): Monday=0; cron: Sunday=0.
         cron_weekday = (day.weekday() + 1) % 7
         dow_matches = cron_weekday in self.days_of_week
 
@@ -182,11 +181,11 @@ def _resolve_scheduled_wall_time(wall_time: datetime, zone: ZoneInfo) -> list[da
 
     if not forward_projections:
         raise ValueError(
-            f"não foi possível projetar o horário inexistente {wall_time!s} em {zone.key}"
+            f"could not project non-existent wall time {wall_time!s} in {zone.key}"
         )
 
-    # A projeção para frente preserva a posição dentro do gap; usar o menor
-    # horário civil projetado evita saltar mais do que a transição exige.
+    # Forward projection preserves the position within the gap; using the smallest
+    # projected civil time avoids shifting more than the transition requires.
     return [
         min(
             forward_projections.values(),
@@ -198,17 +197,17 @@ def _resolve_scheduled_wall_time(wall_time: datetime, zone: ZoneInfo) -> list[da
 def _resolve_naive_now(now: datetime, zone: ZoneInfo) -> datetime:
     """Interpret naive `now` as local time only when it maps to one instant."""
     if not isinstance(now, datetime):
-        raise TypeError("now deve ser um datetime")
+        raise TypeError("now must be a datetime instance")
     if now.tzinfo is not None and now.utcoffset() is not None:
         return now.astimezone(zone)
 
     wall_time = now.replace(tzinfo=None)
     valid = _possible_instants(wall_time, zone)
     if not valid:
-        raise ValueError(f"now é um horário local inexistente em {zone.key}: {wall_time}")
+        raise ValueError(f"now is a non-existent local time in {zone.key}: {wall_time}")
     if len(valid) > 1:
         raise ValueError(
-            f"now é ambíguo em {zone.key}; informe um datetime aware com fold=0 ou fold=1"
+            f"now is ambiguous in {zone.key}; provide an aware datetime with fold=0 or fold=1"
         )
     return valid[0]
 
@@ -218,31 +217,31 @@ def next_cron_fire(
     now: datetime,
     zone_key: str,
 ) -> datetime:
-    """Calcule o próximo instante real de execução, estritamente após `now`.
+    """Calculate the next actual execution instant, strictly after `now`.
 
     Args:
-        expression: Cron simplificado com cinco campos.
-        now: datetime aware (qualquer zona) ou naive local não ambíguo.
-        zone_key: nome IANA, por exemplo ``America/New_York``.
+        expression: Simplified cron expression with five fields.
+        now: Aware datetime (any zone) or unambiguous local naive datetime.
+        zone_key: IANA zone name, e.g., ``America/New_York``.
 
     Returns:
-        Próxima ocorrência como datetime aware na zona IANA solicitada.
+        Next occurrence as an aware datetime in the requested IANA zone.
 
     Raises:
-        CronExpressionError: se a expressão cron for inválida.
-        ValueError: se `now` naive for ambíguo/inexistente ou se não houver
-            ocorrência dentro de um ciclo gregoriano de 400 anos.
-        zoneinfo.ZoneInfoNotFoundError: se a zona IANA não existir no sistema.
+        CronExpressionError: if the cron expression is invalid.
+        ValueError: if naive `now` is ambiguous/non-existent or if no
+            occurrence is found within a 400-year Gregorian cycle.
+        zoneinfo.ZoneInfoNotFoundError: if the IANA zone does not exist in the system.
     """
     if not isinstance(zone_key, str):
-        raise TypeError("zone_key deve ser uma string IANA")
+        raise TypeError("zone_key must be an IANA string")
     cron = CronExpression.parse(expression)
     zone = ZoneInfo(zone_key)
     local_now = _resolve_naive_now(now, zone)
     now_utc = local_now.astimezone(_UTC)
 
-    # O calendário gregoriano se repete a cada 400 anos (146097 dias). A busca
-    # limitada evita loops infinitos até para combinações sem datas possíveis.
+    # The Gregorian calendar repeats every 400 years (146,097 days). Limited search
+    # prevents infinite loops even for combinations without possible dates.
     for day_offset in range(_GREGORIAN_CYCLE_DAYS + 1):
         try:
             civil_day = local_now.date() + timedelta(days=day_offset)
@@ -260,12 +259,12 @@ def next_cron_fire(
                         return occurrence
 
     raise ValueError(
-        "a expressão cron não tem próxima ocorrência no ciclo gregoriano de 400 anos"
+        "cron expression has no upcoming occurrence within the 400-year Gregorian cycle"
     )
 
 
 # ---------------------------------------------------------------------------
-# Testes automatizados: python cron_dst_scheduler.py
+# Automated tests: python cron_dst.py
 # ---------------------------------------------------------------------------
 import unittest
 
@@ -282,18 +281,18 @@ class CronExpressionTests(unittest.TestCase):
         zero = CronExpression.parse("0 0 * * 0")
         seven = CronExpression.parse("0 0 * * 7")
         self.assertEqual(zero.days_of_week, seven.days_of_week)
-        self.assertTrue(zero.matches_date(date(2024, 11, 3)))  # domingo
+        self.assertTrue(zero.matches_date(date(2024, 11, 3)))  # Sunday
 
     def test_invalid_expressions_raise(self) -> None:
         invalid = (
-            "0 2 * *",          # quatro campos
-            "60 2 * * *",       # minuto fora do intervalo
-            "0 24 * * *",       # hora fora do intervalo
-            "0 2 * 13 *",       # mês fora do intervalo
-            "0 2 * * 8",        # weekday fora do intervalo
-            "0 2 */0 * *",      # passo zero
-            "0 2 10-2 * *",     # intervalo invertido
-            "0 2 1,,2 * *",     # item vazio
+            "0 2 * *",          # four fields
+            "60 2 * * *",       # minute out of range
+            "0 24 * * *",       # hour out of range
+            "0 2 * 13 *",       # month out of range
+            "0 2 * * 8",        # weekday out of range
+            "0 2 */0 * *",      # zero step
+            "0 2 10-2 * *",     # inverted range
+            "0 2 1,,2 * *",     # empty item
         )
         for expression in invalid:
             with self.subTest(expression=expression):
@@ -305,7 +304,7 @@ class CronExpressionTests(unittest.TestCase):
             CronExpression.parse(None)  # type: ignore[arg-type]
 
     def test_dom_and_dow_use_cron_or_semantics(self) -> None:
-        # Dom=1 ou segunda-feira: em 2 jan 2024, a próxima ocorrência é segunda 8 jan.
+        # Dom=1 or Monday: on Jan 2, 2024, the next occurrence is Monday, Jan 8.
         now = datetime(2024, 1, 2, 10, 0, tzinfo=ZoneInfo("UTC"))
         result = next_cron_fire("0 9 1 * 1", now, "America/New_York")
         self.assertEqual(result.date(), date(2024, 1, 8))
@@ -345,12 +344,12 @@ class CronDstSchedulingTests(unittest.TestCase):
 
     def test_naive_ambiguous_now_is_rejected(self) -> None:
         now = datetime(2024, 11, 3, 1, 30)
-        with self.assertRaisesRegex(ValueError, "ambíguo"):
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
             next_cron_fire("0 2 * * *", now, self.ZONE)
 
     def test_naive_nonexistent_now_is_rejected(self) -> None:
         now = datetime(2024, 3, 10, 2, 30)
-        with self.assertRaisesRegex(ValueError, "inexistente"):
+        with self.assertRaisesRegex(ValueError, "non-existent"):
             next_cron_fire("0 3 * * *", now, self.ZONE)
 
     def test_non_datetime_now_is_rejected(self) -> None:
@@ -369,7 +368,7 @@ class CronDstSchedulingTests(unittest.TestCase):
         self.assertEqual(result.isoformat(), "2024-03-12T02:30:00-04:00")
 
     def test_weekday_schedule_skips_weekend(self) -> None:
-        now = datetime(2024, 3, 8, 10, 0, tzinfo=ZoneInfo(self.ZONE))  # sexta-feira
+        now = datetime(2024, 3, 8, 10, 0, tzinfo=ZoneInfo(self.ZONE))  # Friday
         result = next_cron_fire("0 9 * * 1-5", now, self.ZONE)
         self.assertEqual(result.date(), date(2024, 3, 11))
         self.assertEqual((result.hour, result.minute), (9, 0))
